@@ -80,9 +80,7 @@ impl Log {
     }
 
     pub fn mark_skipped(&mut self, path: String, reason: SkipReason) {
-        if !self.skipped_files.contains_key(&path) {
-            self.skipped_files.insert(path, reason.to_string());
-        }
+        self.skipped_files.insert(path, reason.to_string());
     }
 
     fn display_filesize(size: u64) -> String {
