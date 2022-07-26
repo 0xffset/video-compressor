@@ -2,11 +2,12 @@ use std::{
     collections::HashMap,
     fmt::Display,
     fs::{DirEntry, File},
-    io::{BufRead, BufReader, Error, Write},
+    io::{BufRead, BufReader, Error, Read, Write},
     path::PathBuf,
     process::{Command, Stdio},
 };
 
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 enum SkipReason {
@@ -177,6 +178,104 @@ fn iterate_dir(path: &PathBuf, log: &mut Log) {
     }
 }
 
+fn print_video_length(path_buf: PathBuf) {
+    let stdout = match Command::new("ffprobe")
+        .arg("-loglevel")
+        .arg("fatal")
+        .arg("-i")
+        .arg(path_buf)
+        .arg("-show_entries")
+        .arg("format=duration")
+        .arg("-of")
+        .arg("csv=p=0")
+        .arg("-sexagesimal")
+        .stdout(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => match child.stdout {
+            Some(stdout) => stdout,
+            None => return,
+        },
+        Err(_) => return,
+    };
+
+    let reader = BufReader::new(stdout);
+    reader
+        .lines()
+        .filter_map(|line| line.ok())
+        .for_each(|line| println!("Video length: {}", line));
+}
+
+fn compress(path_buf: PathBuf, dest_path_buf: PathBuf, log: &mut Log) {
+    let stderr = match Command::new("ffmpeg")
+        .arg("-loglevel")
+        .arg("fatal")
+        .arg("-stats")
+        .arg("-i")
+        .arg(path_buf)
+        .arg("-c:v")
+        .arg("libx265")
+        .arg("-c:a")
+        .arg("copy")
+        .arg("-x265-params")
+        .arg("crf=25")
+        .arg("-x265-params")
+        .arg("log-level=fatal")
+        .arg(dest_path_buf)
+        .arg("-y")
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => match child.stderr {
+            Some(stderr) => stderr,
+            None => {
+                log.save();
+                panic!("Failed to get ffmpeg stderr");
+            }
+        },
+        Err(e) => {
+            log.save();
+            panic!("Failed to run ffmpeg: {e}");
+        }
+    };
+
+    eprint!("Progress: 00:00:00");
+    let time_regex = Regex::new(r"time=(\d+):(\d+):(\d+).(\d+)").unwrap();
+    let mut second = 0;
+    let mut minute = 0;
+    let mut hour = 0;
+    let mut buffer = String::new();
+    for byte in stderr.bytes() {
+        if let Ok(byte) = byte {
+            buffer.push(byte as char);
+
+            if time_regex.is_match(&buffer) {
+                if let Some(captures) = time_regex.captures(&buffer) {
+                    let new_second = captures[3].parse::<u64>().unwrap();
+                    let new_minute = captures[2].parse::<u64>().unwrap();
+                    let new_hour = captures[1].parse::<u64>().unwrap();
+                    if new_hour > hour {
+                        hour = new_hour;
+                        minute = new_minute;
+                        second = new_second;
+                        eprint!("\rProgress: {hour:0>2}:{minute:0>2}:{second:0>2}");
+                    } else if new_minute > minute {
+                        minute = new_minute;
+                        second = new_second;
+                        eprint!("\rProgress: {hour:0>2}:{minute:0>2}:{second:0>2}");
+                    } else if new_second > second {
+                        second = new_second;
+                        eprint!("\rProgress: {hour:0>2}:{minute:0>2}:{second:0>2}");
+                    }
+
+                    buffer.clear();
+                }
+            }
+        }
+    }
+    eprintln!();
+}
+
 fn process_entry(entry: &DirEntry, log: &mut Log) -> Result<u64, ()> {
     let path = entry.path().to_string_lossy().to_string();
     let file_type = match entry.file_type() {
@@ -210,38 +309,9 @@ fn process_entry(entry: &DirEntry, log: &mut Log) -> Result<u64, ()> {
                     + "_x265.mp4",
             );
 
-            let stdout = match Command::new("ffmpeg")
-                .arg("-i")
-                .arg(path_buf.clone())
-                .arg("-c:v")
-                .arg("libx265")
-                .arg("-c:a")
-                .arg("copy")
-                .arg("-x265-params")
-                .arg("crf=25")
-                .arg(dest_path_buf.clone())
-                .arg("-y")
-                .stdout(Stdio::piped())
-                .spawn()
-            {
-                Ok(child) => match child.stdout {
-                    Some(stdout) => stdout,
-                    None => {
-                        log.save();
-                        panic!("Failed to get ffmpeg stdout");
-                    }
-                },
-                Err(e) => {
-                    log.save();
-                    panic!("Failed to run ffmpeg: {e}");
-                }
-            };
-
-            let reader = BufReader::new(stdout);
-            reader
-                .lines()
-                .filter_map(|line| line.ok())
-                .for_each(|line| println!("{}", line));
+            println!("Compressing {}...", path_buf.to_string_lossy());
+            print_video_length(path_buf.clone());
+            compress(path_buf.clone(), dest_path_buf.clone(), log);
 
             let post_size = match File::open(dest_path_buf.clone()) {
                 Ok(file) => match file.metadata() {
