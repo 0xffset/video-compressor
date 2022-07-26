@@ -20,7 +20,6 @@ enum SkipReason {
     Metadata(Error),
     ReadDir(Error),
     FileType(Error),
-    Extension,
     Override(Error),
     NotAFile,
     OpeningCompressedFile(Error),
@@ -33,7 +32,6 @@ impl Display for SkipReason {
             Metadata(e) => write!(f, "Failed to read metadata: {e}"),
             ReadDir(e) => write!(f, "Failed to read directory: {e}"),
             FileType(e) => write!(f, "Failed to determine file type: {e}"),
-            Extension => write!(f, "Failed to determine file extension"),
             Override(e) => write!(f, "Failed to override file: {e}"),
             NotAFile => write!(f, "Not a file"),
             OpeningCompressedFile(e) => {
