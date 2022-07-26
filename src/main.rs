@@ -41,11 +41,9 @@ impl Display for SkipReason {
 struct Log {
     shrunk_files: HashMap<String, (u64, u64)>,
 
-    #[serde(skip)]
     added_files: HashMap<String, (u64, u64)>,
 
-    #[serde(skip)]
-    skipped_files: Vec<(String, SkipReason)>,
+    skipped_files: HashMap<String, String>,
 
     #[serde(skip)]
     save_file: String,
@@ -67,7 +65,7 @@ impl Log {
         Log {
             shrunk_files: HashMap::new(),
             added_files: HashMap::new(),
-            skipped_files: Vec::new(),
+            skipped_files: HashMap::new(),
             save_file: path,
         }
     }
@@ -82,7 +80,9 @@ impl Log {
     }
 
     pub fn mark_skipped(&mut self, path: String, reason: SkipReason) {
-        self.skipped_files.push((path, reason));
+        if !self.skipped_files.contains_key(&path) {
+            self.skipped_files.insert(path, reason.to_string());
+        }
     }
 
     fn display_filesize(size: u64) -> String {
@@ -104,7 +104,7 @@ impl Log {
         format!("{size:.2}{unit}")
     }
 
-    pub fn print_status(&self) {
+    pub fn print_status(&mut self) {
         println!(" ==== ==== ==== ");
         let mut total_prev = 0;
         let mut total_post = 0;
@@ -117,16 +117,14 @@ impl Log {
                 Log::display_filesize(*post),
             );
         }
-
+        self.added_files.clear();
         println!(" ==== ==== ==== \n");
         println!(" ==== ==== ==== ");
 
         for (path, reason) in &self.skipped_files {
-            match reason {
-                SkipReason::Extension => continue,
-                _ => println!("Skipped `{path}`: {}", reason),
-            }
+            println!("Skipped `{path}`: {}", reason);
         }
+        self.skipped_files.clear();
         println!(" ==== ==== ==== \n");
 
         println!(
@@ -170,6 +168,7 @@ fn iterate_dir(path: &PathBuf, log: &mut Log) {
                     let prev_size = metadata.len();
                     if let Ok(post_size) = process_entry(&dir, log) {
                         log.mark_processed(path, prev_size, post_size);
+                        log.save();
                     }
                 }
             } else {
@@ -298,7 +297,7 @@ fn process_entry(entry: &DirEntry, log: &mut Log) -> Result<u64, ()> {
         };
 
         // TODO: add support for other file types
-        if extension == "mp4" {
+        if extension == "mp4" && !path.ends_with(".mp4_x265.mp4") {
             let mut dest_path_buf = path_buf.clone();
             dest_path_buf.set_file_name(
                 dest_path_buf
@@ -352,6 +351,6 @@ fn main() {
     let path = path[1].clone();
     let mut log = Log::new(path.clone());
     iterate_dir(&PathBuf::from(path), &mut log);
-    log.save();
     log.print_status();
+    log.save();
 }
