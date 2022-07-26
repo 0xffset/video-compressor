@@ -10,6 +10,12 @@ use std::{
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
+macro_rules! filetype_check {
+    ($path:ident, $($type:literal),*) => {
+        ($($path.ends_with($type)) ||*) && !($($path.ends_with(&($type.to_string() + "_x265.mp4"))) ||*)
+    };
+}
+
 enum SkipReason {
     Metadata(Error),
     ReadDir(Error),
@@ -40,9 +46,7 @@ impl Display for SkipReason {
 #[derive(Serialize, Deserialize)]
 struct Log {
     shrunk_files: HashMap<String, (u64, u64)>,
-
     added_files: HashMap<String, (u64, u64)>,
-
     skipped_files: HashMap<String, String>,
 
     #[serde(skip)]
@@ -61,7 +65,8 @@ impl Log {
                 Err(_) => {}
             };
         };
-        // if file doesn't exist or problems while opening just create a new logger and ignore it
+
+        // if file doesn't exist or problems while opening just create a new log and ignore it
         Log {
             shrunk_files: HashMap::new(),
             added_files: HashMap::new(),
@@ -103,33 +108,39 @@ impl Log {
     }
 
     pub fn print_status(&mut self) {
-        println!(" ==== ==== ==== ");
         let mut total_prev = 0;
         let mut total_post = 0;
-        for (path, (prev, post)) in &self.added_files {
-            total_prev += prev;
-            total_post += post;
+        if !self.added_files.is_empty() {
+            println!(" ==== ==== ==== ");
+            for (path, (prev, post)) in &self.added_files {
+                total_prev += prev;
+                total_post += post;
+                println!(
+                    "Compressed `{path}`: {} -> {}",
+                    Log::display_filesize(*prev),
+                    Log::display_filesize(*post),
+                );
+            }
+            self.added_files.clear();
+            println!(" ==== ==== ==== \n");
+        }
+
+        if !self.skipped_files.is_empty() {
+            println!(" ==== ==== ==== ");
+            for (path, reason) in &self.skipped_files {
+                println!("Skipped `{path}`: {}", reason);
+            }
+            self.skipped_files.clear();
+            println!(" ==== ==== ==== \n");
+        }
+
+        if total_prev != 0 {
             println!(
-                "Compressed `{path}`: {} -> {}",
-                Log::display_filesize(*prev),
-                Log::display_filesize(*post),
+                "Total compression: {} -> {}",
+                Log::display_filesize(total_prev),
+                Log::display_filesize(total_post),
             );
         }
-        self.added_files.clear();
-        println!(" ==== ==== ==== \n");
-        println!(" ==== ==== ==== ");
-
-        for (path, reason) in &self.skipped_files {
-            println!("Skipped `{path}`: {}", reason);
-        }
-        self.skipped_files.clear();
-        println!(" ==== ==== ==== \n");
-
-        println!(
-            "Total compression: {} -> {}",
-            Log::display_filesize(total_prev),
-            Log::display_filesize(total_post),
-        );
     }
 
     pub fn save(&self) {
@@ -286,16 +297,8 @@ fn process_entry(entry: &DirEntry, log: &mut Log) -> Result<u64, ()> {
 
     if file_type.is_file() {
         let path_buf = entry.path();
-        let extension = match path_buf.extension() {
-            Some(extension) => extension,
-            None => {
-                log.mark_skipped(path.clone(), SkipReason::Extension);
-                return Err(());
-            }
-        };
 
-        // TODO: add support for other file types
-        if extension == "mp4" && !path.ends_with(".mp4_x265.mp4") {
+        if filetype_check!(path, ".mp4", ".mov") {
             let mut dest_path_buf = path_buf.clone();
             dest_path_buf.set_file_name(
                 dest_path_buf
