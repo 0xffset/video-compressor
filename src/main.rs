@@ -17,7 +17,6 @@ enum SkipReason {
     Extension,
     Override(Error),
     NotAFile,
-    AlreadyProcessed,
     OpeningCompressedFile(Error),
 }
 
@@ -31,7 +30,6 @@ impl Display for SkipReason {
             Extension => write!(f, "Failed to determine file extension"),
             Override(e) => write!(f, "Failed to override file: {e}"),
             NotAFile => write!(f, "Not a file"),
-            AlreadyProcessed => write!(f, "Already processed"),
             OpeningCompressedFile(e) => {
                 write!(f, "Failed to open compressed file to read size: {e}")
             }
@@ -107,6 +105,7 @@ impl Log {
     }
 
     pub fn print_status(&self) {
+        println!(" ==== ==== ==== ");
         let mut total_prev = 0;
         let mut total_post = 0;
         for (path, (prev, post)) in &self.added_files {
@@ -119,12 +118,16 @@ impl Log {
             );
         }
 
+        println!(" ==== ==== ==== \n");
+        println!(" ==== ==== ==== ");
+
         for (path, reason) in &self.skipped_files {
             match reason {
                 SkipReason::Extension => continue,
                 _ => println!("Skipped `{path}`: {}", reason),
             }
         }
+        println!(" ==== ==== ==== \n");
 
         println!(
             "Total compression: {} -> {}",
@@ -168,8 +171,6 @@ fn iterate_dir(path: &PathBuf, log: &mut Log) {
                     if let Ok(post_size) = process_entry(&dir, log) {
                         log.mark_processed(path, prev_size, post_size);
                     }
-                } else {
-                    log.mark_skipped(path, SkipReason::AlreadyProcessed);
                 }
             } else {
                 iterate_dir(&dir.path(), log);
