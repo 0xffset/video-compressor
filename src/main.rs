@@ -210,7 +210,12 @@ fn print_video_length(path_buf: PathBuf) {
     reader
         .lines()
         .filter_map(|line| line.ok())
-        .for_each(|line| println!("Video length: {}", line));
+        .for_each(|line| {
+            println!(
+                "Video length: {}",
+                line.split(".").collect::<Vec<&str>>()[0]
+            )
+        });
 }
 
 fn compress(path_buf: PathBuf, dest_path_buf: PathBuf, log: &mut Log) {
@@ -247,10 +252,7 @@ fn compress(path_buf: PathBuf, dest_path_buf: PathBuf, log: &mut Log) {
     };
 
     eprint!("Progress: 00:00:00");
-    let time_regex = Regex::new(r"time=(\d+):(\d+):(\d+).(\d+)").unwrap();
-    let mut second = 0;
-    let mut minute = 0;
-    let mut hour = 0;
+    let time_regex = Regex::new(r"time=(\d+):(\d+):(\d+).*speed=(\d+).(\d+)").unwrap();
     let mut buffer = String::new();
     for byte in stderr.bytes() {
         if let Ok(byte) = byte {
@@ -258,23 +260,12 @@ fn compress(path_buf: PathBuf, dest_path_buf: PathBuf, log: &mut Log) {
 
             if time_regex.is_match(&buffer) {
                 if let Some(captures) = time_regex.captures(&buffer) {
-                    let new_second = captures[3].parse::<u64>().unwrap();
-                    let new_minute = captures[2].parse::<u64>().unwrap();
-                    let new_hour = captures[1].parse::<u64>().unwrap();
-                    if new_hour > hour {
-                        hour = new_hour;
-                        minute = new_minute;
-                        second = new_second;
-                        eprint!("\rProgress: {hour:0>2}:{minute:0>2}:{second:0>2}");
-                    } else if new_minute > minute {
-                        minute = new_minute;
-                        second = new_second;
-                        eprint!("\rProgress: {hour:0>2}:{minute:0>2}:{second:0>2}");
-                    } else if new_second > second {
-                        second = new_second;
-                        eprint!("\rProgress: {hour:0>2}:{minute:0>2}:{second:0>2}");
-                    }
-
+                    let speed_minor = captures[5].parse::<u64>().unwrap();
+                    let speed_major = captures[4].parse::<u64>().unwrap();
+                    let second = captures[3].parse::<u64>().unwrap();
+                    let minute = captures[2].parse::<u64>().unwrap();
+                    let hour = captures[1].parse::<u64>().unwrap();
+                    eprint!("\rProgress: {hour:0>2}:{minute:0>2}:{second:0>2} Speed: {speed_major:0>2}.{speed_minor:0<2}x");
                     buffer.clear();
                 }
             }
