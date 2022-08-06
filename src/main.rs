@@ -317,9 +317,20 @@ fn process_entry(entry: &DirEntry, log: &mut Log) -> Result<u64, ()> {
                 }
             };
 
-            if let Err(e) = Command::new("mv").arg(dest_path_buf).arg(path_buf).spawn() {
-                log.mark_skipped(path.clone(), SkipReason::Override(e));
-                return Err(());
+            if cfg!(unix) {
+                if let Err(e) = Command::new("mv").arg(dest_path_buf).arg(path_buf).spawn() {
+                    log.mark_skipped(path.clone(), SkipReason::Override(e));
+                    return Err(());
+                }
+            } else if cfg!(windows) {
+                if let Err(e) = Command::new("move")
+                    .arg(path_buf)
+                    .arg(dest_path_buf)
+                    .spawn()
+                {
+                    log.mark_skipped(path.clone(), SkipReason::Override(e));
+                    return Err(());
+                }
             }
 
             return Ok(post_size);

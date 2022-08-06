@@ -10,6 +10,8 @@ The program __will not__:
 - compress videos that are already compressed
 - search for a `compression_log.json` file in the current folder or any parent or child folder
 
+This program might not work on windows systems as i have not tested it on windows.
+
 ## Requirements
 - Rust
 - ffmpeg
