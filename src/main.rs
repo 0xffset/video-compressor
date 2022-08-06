@@ -324,6 +324,7 @@ fn process_entry(entry: &DirEntry, log: &mut Log) -> Result<u64, ()> {
                 }
             } else if cfg!(windows) {
                 if let Err(e) = Command::new("move")
+                    .arg("/y")
                     .arg(path_buf)
                     .arg(dest_path_buf)
                     .spawn()
