@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     fmt::Display,
-    fs::{DirEntry, File},
+    fs::File,
     io::{BufRead, BufReader, Error, Read, Write},
     path::PathBuf,
     process::{Command, Stdio},
@@ -19,9 +19,7 @@ macro_rules! filetype_check {
 enum SkipReason {
     Metadata(Error),
     ReadDir(Error),
-    FileType(Error),
     Override(Error),
-    NotAFile,
     OpeningCompressedFile(Error),
 }
 
@@ -31,9 +29,7 @@ impl Display for SkipReason {
         match self {
             Metadata(e) => write!(f, "Failed to read metadata: {e}"),
             ReadDir(e) => write!(f, "Failed to read directory: {e}"),
-            FileType(e) => write!(f, "Failed to determine file type: {e}"),
             Override(e) => write!(f, "Failed to override file: {e}"),
-            NotAFile => write!(f, "Not a file"),
             OpeningCompressedFile(e) => {
                 write!(f, "Failed to open compressed file to read size: {e}")
             }
@@ -159,10 +155,10 @@ fn iterate_dir(path: &PathBuf, log: &mut Log) {
         }
     };
 
-    for dir in read_dir {
-        if let Ok(dir) = dir {
-            let path = dir.path().to_string_lossy().to_string();
-            let metadata = match dir.metadata() {
+    for dir_entry in read_dir {
+        if let Ok(dir_entry) = dir_entry {
+            let path = dir_entry.path().to_string_lossy().to_string();
+            let metadata = match dir_entry.metadata() {
                 Ok(metadata) => metadata,
                 Err(e) => {
                     log.mark_skipped(path, SkipReason::Metadata(e));
@@ -172,14 +168,17 @@ fn iterate_dir(path: &PathBuf, log: &mut Log) {
 
             if !metadata.is_dir() {
                 if !log.is_already_processed(&path) {
-                    let prev_size = metadata.len();
-                    if let Ok(post_size) = process_entry(&dir, log) {
-                        log.mark_processed(path, prev_size, post_size);
-                        log.save();
+                    let path = dir_entry.path().to_string_lossy().to_string();
+                    if filetype_check!(path, ".mp4", ".mov") {
+                        let prev_size = metadata.len();
+                        if let Ok(post_size) = process_file(dir_entry.path(), log) {
+                            log.mark_processed(path, prev_size, post_size);
+                            log.save();
+                        }
                     }
                 }
             } else {
-                iterate_dir(&dir.path(), log);
+                iterate_dir(&dir_entry.path(), log);
             }
         }
     }
@@ -274,73 +273,55 @@ fn compress(path_buf: PathBuf, dest_path_buf: PathBuf, log: &mut Log) {
     eprintln!();
 }
 
-fn process_entry(entry: &DirEntry, log: &mut Log) -> Result<u64, ()> {
-    let path = entry.path().to_string_lossy().to_string();
-    let file_type = match entry.file_type() {
-        Ok(file_type) => file_type,
+fn process_file(path_buf: PathBuf, log: &mut Log) -> Result<u64, ()> {
+    let path = path_buf.to_string_lossy().to_string();
+    let mut dest_path_buf = path_buf.clone();
+    dest_path_buf.set_file_name(
+        dest_path_buf
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string()
+            + "_x265.mp4",
+    );
+
+    println!("Compressing {}...", path_buf.to_string_lossy());
+    print_video_length(path_buf.clone());
+    compress(path_buf.clone(), dest_path_buf.clone(), log);
+
+    let post_size = match File::open(dest_path_buf.clone()) {
+        Ok(file) => match file.metadata() {
+            Ok(metadata) => metadata.len(),
+            Err(e) => {
+                log.mark_skipped(path, SkipReason::Metadata(e));
+                return Err(());
+            }
+        },
         Err(e) => {
-            log.mark_skipped(path.clone(), SkipReason::FileType(e));
+            log.mark_skipped(path, SkipReason::OpeningCompressedFile(e));
             return Err(());
         }
     };
 
-    if file_type.is_file() {
-        let path_buf = entry.path();
-
-        if filetype_check!(path, ".mp4", ".mov") {
-            let mut dest_path_buf = path_buf.clone();
-            dest_path_buf.set_file_name(
-                dest_path_buf
-                    .file_name()
-                    .unwrap()
-                    .to_str()
-                    .unwrap()
-                    .to_string()
-                    + "_x265.mp4",
-            );
-
-            println!("Compressing {}...", path_buf.to_string_lossy());
-            print_video_length(path_buf.clone());
-            compress(path_buf.clone(), dest_path_buf.clone(), log);
-
-            let post_size = match File::open(dest_path_buf.clone()) {
-                Ok(file) => match file.metadata() {
-                    Ok(metadata) => metadata.len(),
-                    Err(e) => {
-                        log.mark_skipped(path, SkipReason::Metadata(e));
-                        return Err(());
-                    }
-                },
-                Err(e) => {
-                    log.mark_skipped(path, SkipReason::OpeningCompressedFile(e));
-                    return Err(());
-                }
-            };
-
-            if cfg!(unix) {
-                if let Err(e) = Command::new("mv").arg(dest_path_buf).arg(path_buf).spawn() {
-                    log.mark_skipped(path.clone(), SkipReason::Override(e));
-                    return Err(());
-                }
-            } else if cfg!(windows) {
-                if let Err(e) = Command::new("move")
-                    .arg("/y")
-                    .arg(path_buf)
-                    .arg(dest_path_buf)
-                    .spawn()
-                {
-                    log.mark_skipped(path.clone(), SkipReason::Override(e));
-                    return Err(());
-                }
-            }
-
-            return Ok(post_size);
+    if cfg!(unix) {
+        if let Err(e) = Command::new("mv").arg(dest_path_buf).arg(path_buf).spawn() {
+            log.mark_skipped(path.clone(), SkipReason::Override(e));
+            return Err(());
         }
-    } else {
-        log.mark_skipped(path.clone(), SkipReason::NotAFile);
+    } else if cfg!(windows) {
+        if let Err(e) = Command::new("move")
+            .arg("/y")
+            .arg(path_buf)
+            .arg(dest_path_buf)
+            .spawn()
+        {
+            log.mark_skipped(path.clone(), SkipReason::Override(e));
+            return Err(());
+        }
     }
 
-    Err(())
+    return Ok(post_size);
 }
 
 fn main() {
@@ -351,8 +332,36 @@ fn main() {
     }
 
     let path = path[1].clone();
-    let mut log = Log::new(path.clone());
-    iterate_dir(&PathBuf::from(path), &mut log);
+    let path_buf = PathBuf::from(path.clone());
+    let mut log = if path_buf.is_dir() {
+        let mut log = Log::new(path.clone());
+        iterate_dir(&path_buf, &mut log);
+        log
+    } else {
+        let mut log = Log::new(
+            path_buf
+                .parent()
+                .expect(format!("Failed to get parent of `{path}`").as_str())
+                .to_string_lossy()
+                .to_string(),
+        );
+
+        if !log.is_already_processed(&path) {
+            let metadata = path_buf.metadata();
+            if let Ok(metadata) = metadata {
+                let prev_size = metadata.len();
+                if let Ok(post_size) = process_file(path_buf, &mut log) {
+                    log.mark_processed(path, prev_size, post_size);
+                    log.save();
+                }
+            } else {
+                log.mark_skipped(path, SkipReason::Metadata(metadata.unwrap_err()));
+                log.save();
+            }
+        }
+
+        log
+    };
     log.print_status();
     log.save();
 }
