@@ -5,6 +5,7 @@ use std::{
     io::{BufRead, BufReader, Error, Read, Write},
     path::PathBuf,
     process::{Command, Stdio},
+    time::SystemTime,
 };
 
 use regex::Regex;
@@ -37,10 +38,17 @@ impl Display for SkipReason {
     }
 }
 
+#[derive(Clone, Copy, Serialize, Deserialize)]
+struct FileLog {
+    pub size_prev: u64,
+    pub size_post: u64,
+    pub modified: u64,
+}
+
 #[derive(Serialize, Deserialize)]
 struct Log {
-    shrunk_files: HashMap<String, (u64, u64)>,
-    added_files: HashMap<String, (u64, u64)>,
+    shrunk_files: HashMap<String, FileLog>,
+    added_files: HashMap<String, FileLog>,
     skipped_files: HashMap<String, String>,
 
     #[serde(skip)]
@@ -69,13 +77,28 @@ impl Log {
         }
     }
 
-    pub fn is_already_processed(&self, path: &String) -> bool {
+    pub fn is_already_processed(&self, path: &String, modified_time: u64) -> bool {
         self.shrunk_files.contains_key(path)
+            && self.shrunk_files.get(path).unwrap().modified >= modified_time
     }
 
     pub fn mark_processed(&mut self, path: String, prev: u64, post: u64) {
-        self.shrunk_files.insert(path.clone(), (prev, post));
-        self.added_files.insert(path, (prev, post));
+        let modified = match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
+            Ok(d) => d.as_secs(),
+            Err(e) => {
+                self.save();
+                panic!("Unable to retrieve system time!\n{e}");
+            }
+        };
+
+        let file_log = FileLog {
+            size_prev: prev,
+            size_post: post,
+            modified,
+        };
+
+        self.shrunk_files.insert(path.clone(), file_log);
+        self.added_files.insert(path, file_log);
     }
 
     pub fn mark_skipped(&mut self, path: String, reason: SkipReason) {
@@ -106,13 +129,13 @@ impl Log {
         let mut total_post = 0;
         if !self.added_files.is_empty() {
             println!(" ==== ==== ==== ");
-            for (path, (prev, post)) in &self.added_files {
-                total_prev += prev;
-                total_post += post;
+            for (path, file_log) in &self.added_files {
+                total_prev += file_log.size_prev;
+                total_post += file_log.size_post;
                 println!(
                     "Compressed `{path}`: {} -> {}",
-                    Log::display_filesize(*prev),
-                    Log::display_filesize(*post),
+                    Log::display_filesize(file_log.size_prev),
+                    Log::display_filesize(file_log.size_post),
                 );
             }
             self.added_files.clear();
@@ -166,8 +189,22 @@ fn iterate_dir(path: &PathBuf, log: &mut Log) {
                 }
             };
 
+            let modified = match metadata.modified() {
+                Ok(system_time) => match system_time.duration_since(SystemTime::UNIX_EPOCH) {
+                    Ok(d) => d.as_secs(),
+                    Err(e) => {
+                        log.save();
+                        panic!("Unable to retrieve system time!\n{e}");
+                    }
+                },
+                Err(e) => {
+                    log.mark_skipped(path, SkipReason::Metadata(e));
+                    continue;
+                }
+            };
+
             if !metadata.is_dir() {
-                if !log.is_already_processed(&path) {
+                if !log.is_already_processed(&path, modified) {
                     let path = dir_entry.path().to_string_lossy().to_string();
                     if filetype_check!(path, ".mp4", ".mov") {
                         let prev_size = metadata.len();
@@ -346,18 +383,34 @@ fn main() {
                 .to_string(),
         );
 
-        if !log.is_already_processed(&path) {
-            let metadata = path_buf.metadata();
-            if let Ok(metadata) = metadata {
+        let metadata = path_buf.metadata();
+        if let Ok(metadata) = metadata {
+            let modified = match metadata.modified() {
+                Ok(system_time) => match system_time.duration_since(SystemTime::UNIX_EPOCH) {
+                    Ok(d) => d.as_secs(),
+                    Err(e) => {
+                        log.save();
+                        panic!("Unable to retrieve system time!\n{e}");
+                    }
+                },
+                Err(e) => {
+                    log.mark_skipped(path, SkipReason::Metadata(e));
+                    log.save();
+                    log.print_status();
+                    return;
+                }
+            };
+
+            if !log.is_already_processed(&path, modified) {
                 let prev_size = metadata.len();
                 if let Ok(post_size) = process_file(path_buf, &mut log) {
                     log.mark_processed(path, prev_size, post_size);
                     log.save();
                 }
-            } else {
-                log.mark_skipped(path, SkipReason::Metadata(metadata.unwrap_err()));
-                log.save();
             }
+        } else {
+            log.mark_skipped(path, SkipReason::Metadata(metadata.unwrap_err()));
+            log.save();
         }
 
         log
